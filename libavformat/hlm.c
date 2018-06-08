@@ -10,61 +10,26 @@ typedef enum {
   lmt_64x32s16,
 } lm_type_t;
 
-typedef struct {
-  const char 	*id;
-  const char 	*name;
-  lm_type_t 	lm_type;
-  int		mcol;		/* led module columns */
-  int		mrow;		/* led module rows */
-  int	        turnback;	/* turnback */
-} lm_config_t;
-
-const lm_config_t lm_config_tbl[] =  {
-  { "A1",	"SF3216 1 x 1",		lmt_32x16s8, 1, 1},
-  { "A2",	"SF3216 2 x 1",		lmt_32x16s8, 2, 1},
-  { "A3",	"SF3216 3 x 1",		lmt_32x16s8, 3, 1},
-  { "A4",	"SF3216 4 x 1",		lmt_32x16s8, 4, 1},
-  { "A6",	"SF3216 6 x 1",		lmt_32x16s8, 6, 1},
-  { "A8",	"SF3216 8 x 1",		lmt_32x16s8, 8, 1},
-  
-  { "B1",	"SF3232 1 x 1",		lmt_32x32s16, 1, 1},
-  { "B2",	"SF3232 2 x 1", 	lmt_32x32s16, 2, 1},
-  { "B22",	"SF3232 2 x 2", 	lmt_32x32s16, 2, 2},
-  { "B23",	"SF3232 3 x 2", 	lmt_32x32s16, 3, 2},
-  { "B4",	"SF3232 4 x 1", 	lmt_32x32s16, 4, 1},
-  { "B43",	"SF3232 4 x 3", 	lmt_32x32s16, 4, 3},
-  { "B6",	"SF3232 6 x 1", 	lmt_32x32s16, 6, 1},
-
-  { "C1",	"64x32 1x1",		lmt_64x32s16, 1, 1},
-  { "C12",	"64x32 1x2",		lmt_64x32s16, 1, 2},
-  { "C13",	"64x32 1x3",		lmt_64x32s16, 1, 3},
-  { "C12T",	"64x32 1x2",		lmt_64x32s16, 1, 2, 1},
-  { "C13T",	"64x32 1x3",		lmt_64x32s16, 1, 3, 1},
-  { NULL},
-};
-
 
 #define MASK_MAX	6
 
 typedef struct {
   AVFormatContext *s;
-  char *led_conf;	/* option: -hlm_conf */
+  char *led_scan;	/* option: -hlm_scan */
   char *led_bits;	/* option: -hlm_bits */
   char *offset;		/* option: -hlm_offset */
 
-  int src_w;
-  int src_h;
-  int dst_w;
-  int dst_h;
+  int w;
+  int h;
   int ox,oy;
   int srow;		/* scan row  */
   int lrpm;		/* Led Row per module */
   int bpp;		/* byte per plane */
-  int turnback;
   int mask[MASK_MAX];	/* bit Position for R0,G0,B0,R1,B1,B1 */
   int frame_cnt;
   int frame_size;
   char *frame_buf;
+  hlm3_header_t header;
 } HLMContext;
 
 static int hlm_error(HLMContext *cont, const char *fmt, ...)
@@ -80,40 +45,18 @@ static int hlm_error(HLMContext *cont, const char *fmt, ...)
 }
 
 
-static int parse_led_conf(HLMContext *cont)
+static int parse_led_scan(HLMContext *cont)
 {
-  int lcpm;		/* led column per module */
-  const lm_config_t *p;
+  int scan;
   
-  for(p=lm_config_tbl; p->id; p++){
-    if(strcmp(cont->led_conf, p->id)==0)
-      break;
-  }
-  if(p->id == NULL)
-    return hlm_error(cont, "LED conf \"%s\" not defined.\n", cont->led_conf);
+  if(sscanf(cont->led_scan, "%d", &scan) != 1)
+    return hlm_error(cont, "bad integer %s", cont->led_scan);
 
-  if(p->lm_type == lmt_32x16s8){ 
-    lcpm = 32;
-    cont->srow = 8;
-    cont->lrpm = 16;
-  }
-  else if(p->lm_type == lmt_32x32s16){
-    lcpm = 32;
-    cont->srow = 16;
-    cont->lrpm = 32;
-  }
-  else if(p->lm_type == lmt_64x32s16){
-    lcpm = 64;
-    cont->srow = 16;
-    cont->lrpm = 32;
-  }
-  else return hlm_error(cont, "undefined lm_type:%d\n", p->lm_type);
+  if(scan != 8 && scan != 16 && scan != 32)
+    return hlm_error(cont, "led_scan must be 8,16 or 32");
 
-  cont->dst_w = p->mcol * lcpm;
-  cont->dst_h = p->mrow * cont->lrpm;
-  cont->bpp = cont->dst_w * cont->dst_h / 2;
-  cont->frame_size = cont->bpp * 8;
-  cont->turnback = p->turnback;
+  cont->srow = scan;
+  cont->lrpm = scan * 2;;
   return 0;
 }
 
@@ -178,7 +121,7 @@ static int parse_options(HLMContext *cont)
 {
   int r;
   // led_confの解釈
-  r = parse_led_conf(cont);
+  r = parse_led_scan(cont);
   if(r) return r;
   
   // led_bitsの解釈
@@ -197,34 +140,21 @@ static int parse_options(HLMContext *cont)
 static uint8_t *hlm_buf_ptr(HLMContext *cont,int x,int y,int *ppi)
 {
   uint8_t *p = cont->frame_buf;
-  int xx,yy,ym,ym2;
+  int xx,yy,ym;
   
-  if(x < 0 || x >= cont->dst_w || y < 0 || y >= cont->dst_h)
+  if(x < 0 || x >= cont->w || y < 0 || y >= cont->h)
     return NULL;
 
   ym = y / cont->lrpm;
   yy = y % cont->lrpm;
-  ym2 = (cont->dst_h - y - 1) / cont->lrpm;
-  xx = ym * cont->dst_w;
-  if(cont->turnback && (ym2 & 1)){
-    xx += cont->dst_w - x - 1;
-    yy = cont->lrpm - yy - 1;
-  } else {
-    xx += x;
-  }
+  xx = ym * cont->w + x;
 
   if(ppi)
     *ppi = yy < cont->srow ? 0 : 1;
   
   yy %= cont->srow;
-  p += yy * cont->dst_w * (cont->dst_h / cont->lrpm) + xx;
+  p += yy * cont->w * (cont->h / cont->lrpm) + xx;
   
-#if 0
-  fprintf(stderr,"x:%d y:%d lprm:%d ym:%d ym2:%d\n",x,y,cont->lrpm, ym,ym2);
-  fprintf(stderr,"turnback:%d xx:%d srow:%d\n",cont->turnback, xx,cont->srow);
-  fprintf(stderr,"offset:%d\n", p - (uint8_t *)cont->frame_buf);
-  exit(1);
-#endif
   return p;
 }
 
@@ -257,52 +187,55 @@ static int hlm_write_header(AVFormatContext *s)
   HLMContext *cont = (HLMContext *)s->priv_data;
   AVIOContext *pb = s->pb;
   AVStream  *st = s->streams[0];
-  AVCodecContext *codec = st->codec;
-  hlm_header_t header;
+  AVCodecParameters *codecpar = st->codecpar;
+  hlm3_header_t *header = &cont->header;
   int r;
   
-  cont->s = s;
-  cont->src_w = codec->width;
-  cont->src_h = codec->height;
-  cont->frame_cnt = 0;
-  fprintf(stderr," size %d x %d\n", codec->width, codec->height);
-
   r = parse_options(cont);
   if(r) return r;
+  
+  cont->s = s;
+  cont->w = codecpar->width;
+  cont->h = codecpar->height;
+
+  if(cont->h % (cont->lrpm))
+    return hlm_error(cont,"height must be multiple of %d",cont->lrpm);
+  
+  cont->bpp = cont->w * cont->h / 2;
+  cont->frame_size = cont->bpp * 8;
+  cont->frame_cnt = 0;
+
   cont->frame_buf = av_malloc(cont->frame_size);
   if(cont->frame_buf == NULL)
     return hlm_error(cont, "malloc %d bytes failed.\n",cont->frame_size);
 
-  fprintf(stderr," led_conf:%s turnback:%d\n",cont->led_conf, cont->turnback);
-  
-  memset(&header, 0, sizeof header);
-  strcpy(header.signature, "HLM");
-  header.size            = sizeof(header);
-  header.version	 = 2;
-  header.type            = 1;
-  header.width		 = cont->dst_w;
-  header.height		 = cont->dst_h;
-  header.fps_numerator   = st->avg_frame_rate.num;
-  header.fps_denominator = st->avg_frame_rate.den;
-  header.frames = st->nb_frames;
-  header.frame_size = cont->frame_size;
-  header.frame_start = 512;
-  header.frame_offset = cont->frame_size;
-  strncpy(header.led_conf, cont->led_conf, sizeof header.led_conf);
+  memset(header, 0, sizeof *header);
+  strcpy(header->signature, "HLM");
+  header->size            = sizeof(header);
+  header->version	 = 3;
+  header->width		 = cont->w;
+  header->height		 = cont->h;
+  header->scan            = cont->srow;
+  header->fps_numerator   = st->avg_frame_rate.num;
+  header->fps_denominator = st->avg_frame_rate.den;
+  header->frames = 0;
+  header->frame_size = cont->frame_size;
+  header->frame_start = 512;
+  header->frame_offset = cont->frame_size;
 
   avio_write(pb, (const unsigned char *)&header, sizeof(header));
-  avio_seek(pb, header.frame_start, SEEK_SET);
+  avio_seek(pb, header->frame_start, SEEK_SET);
   return 0;
 }
 
-static int hlm_write_video(AVFormatContext *s, AVCodecContext *enc,
+static int hlm_write_video(AVFormatContext *s, AVCodecParameters *enc,
 			   AVPacket *pkt)
 {
   const uint8_t *buf = pkt->data;
   HLMContext *cont = (HLMContext *)s->priv_data;
   AVIOContext *pb = s->pb;
-  int w = cont->src_w;
-  int h = cont->src_h;
+  int w = cont->w;
+  int h = cont->h;
   int x,y;
   const uint8_t *p = buf;
 
@@ -320,26 +253,32 @@ static int hlm_write_video(AVFormatContext *s, AVCodecContext *enc,
 
 static int hlm_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
-  AVCodecContext *codec = s->streams[pkt->stream_index]->codec;
+  AVCodecParameters *codecpar = s->streams[pkt->stream_index]->codecpar;
 
-  if (codec->codec_type == AVMEDIA_TYPE_AUDIO)
+  if (codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
     return 0; /* just ignore audio */
   else
-    return hlm_write_video(s, codec, pkt);
-  // return hlm_write_video(s, codec, pkt->data, pkt->size);
+    return hlm_write_video(s, codecpar, pkt);
 }
 
 static int hlm_write_trailer(AVFormatContext *s)
 {
+  HLMContext *cont = (HLMContext *)s->priv_data;
   avio_flush(s->pb);
+
+  cont->header.frames = cont->frame_cnt;
+  avio_seek(s->pb, 0, SEEK_SET);
+  avio_write(s->pb, (const unsigned char *)&cont->header,
+             sizeof(cont->header));
+  
   return 0;
 }
 
 #define OFFSET(x) offsetof(HLMContext, x)
 #define ENC AV_OPT_FLAG_ENCODING_PARAM
 static const AVOption options[] = {
-  {"hlm_conf", "specify LED Configuration", OFFSET(led_conf),
-   AV_OPT_TYPE_STRING, {.str = ""}, 0, 0, ENC} ,
+  {"hlm_scan", "specify LED scan", OFFSET(led_scan),
+   AV_OPT_TYPE_STRING, {.str = "16"}, 0, 0, ENC} ,
   {"hlm_bits", "specify bits allocation on port", OFFSET(led_bits),
    AV_OPT_TYPE_STRING, {.str = ""}, 0, 0, ENC} ,
   {"hlm_offset", "specify output image position offset", OFFSET(offset),

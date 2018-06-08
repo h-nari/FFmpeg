@@ -28,6 +28,7 @@
 #include "avcodec.h"
 #include "internal.h"
 #include "vaapi_encode.h"
+#include "vp8.h"
 
 
 typedef struct VAAPIEncodeVP8Context {
@@ -142,6 +143,8 @@ static int vaapi_encode_vp8_write_quant_table(AVCodecContext *avctx,
     *type     = VAQMatrixBufferType;
     *data_len = sizeof(quant);
 
+    memset(&quant, 0, sizeof(quant));
+
     if (pic->type == PICTURE_TYPE_P)
         q = priv->q_index_p;
     else
@@ -161,12 +164,12 @@ static av_cold int vaapi_encode_vp8_configure(AVCodecContext *avctx)
     VAAPIEncodeContext     *ctx = avctx->priv_data;
     VAAPIEncodeVP8Context *priv = ctx->priv_data;
 
-    priv->q_index_p = av_clip(avctx->global_quality, 0, 127);
+    priv->q_index_p = av_clip(avctx->global_quality, 0, VP8_MAX_QUANT);
     if (avctx->i_quant_factor > 0.0)
         priv->q_index_i = av_clip((avctx->global_quality *
                                    avctx->i_quant_factor +
                                    avctx->i_quant_offset) + 0.5,
-                                  0, 127);
+                                  0, VP8_MAX_QUANT);
     else
         priv->q_index_i = priv->q_index_p;
 
@@ -259,10 +262,11 @@ AVCodec ff_vp8_vaapi_encoder = {
     .encode2        = &ff_vaapi_encode2,
     .close          = &ff_vaapi_encode_close,
     .priv_class     = &vaapi_encode_vp8_class,
-    .capabilities   = AV_CODEC_CAP_DELAY,
+    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE,
     .defaults       = vaapi_encode_vp8_defaults,
     .pix_fmts = (const enum AVPixelFormat[]) {
         AV_PIX_FMT_VAAPI,
         AV_PIX_FMT_NONE,
     },
+    .wrapper_name   = "vaapi",
 };
